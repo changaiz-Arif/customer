@@ -1,0 +1,370 @@
+HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Inventory Management System</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; }
+    body { background-color: #f4f6f9; color: #333; }
+
+    .admin-container { display: flex; min-height: 100vh; }
+    .sidebar { width: 240px; background: #1e293b; color: #fff; padding: 20px; }
+    .sidebar h2 { margin-bottom: 24px; font-size: 1.2rem; color: #38bdf8; }
+    .sidebar nav button { display: block; width: 100%; padding: 10px; margin-bottom: 8px; background: transparent; border: none; color: #94a3b8; text-align: left; cursor: pointer; border-radius: 4px; font-size: 0.95rem; }
+    .sidebar nav button.active, .sidebar nav button:hover { background: #334155; color: #fff; }
+
+    .content { flex: 1; padding: 30px; overflow-y: auto; }
+    .tab-section { display: none; }
+    .tab-section.active { display: block; }
+
+    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-top: 20px; }
+    .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .card.warning { border-left: 4px solid #f59e0b; }
+    .card.danger { border-left: 4px solid #ef4444; }
+
+    .controls { display: flex; gap: 10px; margin: 20px 0; }
+    .controls input, .controls select { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 4px; }
+    
+    .product-form { background: white; padding: 16px; border-radius: 8px; margin: 20px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+    .product-form input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; flex: 1; min-width: 120px; }
+    .product-form button { padding: 8px 16px; background: #0284c7; color: white; border: none; border-radius: 4px; cursor: pointer; }
+
+    table { width: 100%; border-collapse: collapse; background: white; margin-top: 20px; border-radius: 8px; overflow: hidden; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+    th { background-color: #f8fafc; font-weight: 600; }
+    
+    .btn-action { padding: 4px 8px; margin-right: 4px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+    .btn-inc { background: #dcfce7; color: #166534; }
+    .btn-dec { background: #fee2e2; color: #991b1b; }
+    .btn-del { background: #ef4444; color: white; }
+
+    .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; display: inline-block; }
+    .badge.success { background: #dcfce7; color: #15803d; }
+    .badge.warning { background: #fef3c7; color: #b45309; }
+    .badge.danger { background: #fee2e2; color: #b91c1c; }
+
+    .product-selector { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+    .select-btn { padding: 8px 16px; background: #0284c7; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    .alert-list { list-style: none; margin-top: 20px; }
+    .alert-item { background: white; padding: 12px; margin-bottom: 8px; border-radius: 4px; border-left: 4px solid #cbd5e1; }
+    .alert-item.OUT_OF_STOCK { border-color: #ef4444; }
+    .alert-item.LOW_STOCK { border-color: #f59e0b; }
+    .reorder-box { margin-top: 15px; padding-top: 15px; border-top: 1px solid #e2e8f0; }
+  </style>
+
+  <script type="module">
+    import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+    // SUPABASE CONFIGURATION
+    const SUPABASE_URL = 'https://YOUR_SUPABASE_PROJECT.supabase.co';
+    const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+    const BACKEND_API_URL = 'http://localhost:5000/api/predict-demand';
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Global App State
+    let products = [];
+    let alerts = [];
+    let transactions = [];
+    let editingProductId = null;
+
+    // Initialize Application
+    window.addEventListener('DOMContentLoaded', () => {
+      setupNavigation();
+      setupFormListeners();
+      fetchData();
+    });
+
+    // Navigation Logic
+    function setupNavigation() {
+      const navButtons = document.querySelectorAll('.nav-btn');
+      navButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+          navButtons.forEach(b => b.classList.remove('active'));
+          document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
+          
+          btn.classList.add('active');
+          const targetTab = btn.getAttribute('data-tab');
+          document.getElementById(targetTab).classList.add('active');
+        });
+      });
+    }
+
+    // Load Data from Supabase
+    async function fetchData() {
+      const { data: p } = await supabase.from('products').select('*');
+      const { data: a } = await supabase.from('alerts').select('*, products(name)').order('created_at', { ascending: false });
+      const { data: t } = await supabase.from('inventory_transactions').select('*, products(name)').order('created_at', { ascending: false });
+
+      products = p || [];
+      alerts = a || [];
+      transactions = t || [];
+
+      renderDashboard();
+      renderProducts();
+      renderAISection();
+      renderAlerts();
+      renderHistory();
+    }
+
+    // 1. Dashboard Render
+    function renderDashboard() {
+      document.getElementById('total-products').innerText = products.length;
+      document.getElementById('total-stock').innerText = products.reduce((acc, p) => acc + p.stock, 0);
+      document.getElementById('low-stock-count').innerText = products.filter(p => p.stock > 0 && p.stock <= p.min_stock).length;
+      document.getElementById('out-of-stock-count').innerText = products.filter(p => p.stock === 0).length;
+      
+      const totalValuation = products.reduce((acc, p) => acc + (p.price * p.stock), 0);
+      document.getElementById('total-valuation').innerText = `$${totalValuation.toFixed(2)}`;
+    }
+
+    // 2. Products & CRUD Render
+    function renderProducts() {
+      const tbody = document.getElementById('product-table-body');
+      const searchVal = document.getElementById('search-input').value.toLowerCase();
+      const categoryVal = document.getElementById('category-filter').value;
+
+      const filtered = products.filter(p => {
+        const matchesSearch = p.name.toLowerCase().includes(searchVal) || p.sku.toLowerCase().includes(searchVal);
+        const matchesCategory = categoryVal === 'ALL' || p.category === categoryVal;
+        return matchesSearch && matchesCategory;
+      });
+
+      tbody.innerHTML = filtered.map(p => {
+        let statusBadge = `<span class="badge success">IN STOCK (${p.stock})</span>`;
+        if (p.stock === 0) statusBadge = `<span class="badge danger">OUT OF STOCK</span>`;
+        else if (p.stock <= p.min_stock) statusBadge = `<span class="badge warning">LOW STOCK (${p.stock})</span>`;
+
+        return `
+          <tr>
+            <td>${p.sku}</td>
+            <td>${p.name}</td>
+            <td>${p.category}</td>
+            <td>$${parseFloat(p.price).toFixed(2)}</td>
+            <td>${statusBadge}</td>
+            <td>
+              <button class="btn-action btn-inc" onclick="adjustStock('${p.id}', ${p.stock}, 1)">+</button>
+              <button class="btn-action btn-dec" onclick="adjustStock('${p.id}', ${p.stock}, -1)">-</button>
+              <button class="btn-action" onclick="editProduct('${p.id}')">Edit</button>
+              <button class="btn-action btn-del" onclick="deleteProduct('${p.id}')">Delete</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // Handle Form Operations
+    function setupFormListeners() {
+      document.getElementById('search-input').addEventListener('input', renderProducts);
+      document.getElementById('category-filter').addEventListener('change', renderProducts);
+
+      document.getElementById('product-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const payload = {
+          name: document.getElementById('p-name').value,
+          sku: document.getElementById('p-sku').value,
+          category: document.getElementById('p-category').value,
+          price: parseFloat(document.getElementById('p-price').value),
+          stock: parseInt(document.getElementById('p-stock').value),
+          min_stock: parseInt(document.getElementById('p-min-stock').value)
+        };
+
+        if (editingProductId) {
+          await supabase.from('products').update(payload).eq('id', editingProductId);
+          editingProductId = null;
+          document.getElementById('form-submit-btn').innerText = 'Create';
+        } else {
+          await supabase.from('products').insert([payload]);
+        }
+
+        document.getElementById('product-form').reset();
+        fetchData();
+      });
+    }
+
+    // Stock Adjustment Handlers
+    window.adjustStock = async (id, currentStock, delta) => {
+      const newStock = Math.max(0, currentStock + delta);
+      await supabase.from('products').update({ stock: newStock }).eq('id', id);
+      await supabase.from('inventory_transactions').insert([{
+        product_id: id,
+        type: delta > 0 ? 'IN' : 'OUT',
+        quantity: Math.abs(delta),
+        reason: 'Manual adjustment'
+      }]);
+      fetchData();
+    };
+
+    window.editProduct = (id) => {
+      const product = products.find(p => p.id === id);
+      if (!product) return;
+      
+      editingProductId = id;
+      document.getElementById('p-name').value = product.name;
+      document.getElementById('p-sku').value = product.sku;
+      document.getElementById('p-category').value = product.category;
+      document.getElementById('p-price').value = product.price;
+      document.getElementById('p-stock').value = product.stock;
+      document.getElementById('p-min-stock').value = product.min_stock;
+      document.getElementById('form-submit-btn').innerText = 'Update';
+    };
+
+    window.deleteProduct = async (id) => {
+      if (confirm('Are you sure you want to delete this product?')) {
+        await supabase.from('products').delete().eq('id', id);
+        fetchData();
+      }
+    };
+
+    // 3. AI Demand Forecasting Render & Integration
+    function renderAISection() {
+      const container = document.getElementById('ai-selector-container');
+      container.innerHTML = products.map(p => `
+        <button class="select-btn" onclick="fetchAIPrediction('${p.id}')">Analyze ${p.name}</button>
+      `).join('');
+    }
+
+    window.fetchAIPrediction = async (productId) => {
+      const resultDiv = document.getElementById('prediction-results');
+      resultDiv.style.display = 'block';
+      resultDiv.innerHTML = '<p>Analyzing historical data via Gemini AI Engine...</p>';
+
+      try {
+        const response = await fetch(BACKEND_API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productId })
+        });
+        const data = await response.json();
+
+        resultDiv.innerHTML = `
+          <h2>Forecasting Analysis ${data.is_demo ? '(DEMO MODE)' : '(GEMINI AI)'}</h2>
+          <p><strong>Predicted Demand:</strong> ${data.predicted_demand} units (${data.period})</p>
+          <p><strong>Confidence Score:</strong> ${(data.confidence_score * 100).toFixed(0)}%</p>
+          <p><strong>Reasoning:</strong> ${data.explanation}</p>
+          <div class="reorder-box">
+            <h3>Recommended Reorder Quantity: ${data.recommended_reorder} units</h3>
+            ${data.recommended_reorder > 0 ? 
+              '<span class="badge warning">ACTION REQUIRED: REORDER NOW</span>' : 
+              '<span class="badge success">OPTIMAL STOCK LEVEL</span>'}
+          </div>
+        `;
+      } catch (err) {
+        resultDiv.innerHTML = `<p style="color:red">Error connecting to prediction server. Ensure server.js is running.</p>`;
+      }
+    };
+
+    // 4. Alerts Render
+    function renderAlerts() {
+      const list = document.getElementById('alert-list');
+      list.innerHTML = alerts.map(a => `
+        <li class="alert-item ${a.type}">
+          <strong>[${a.type}]</strong> ${a.message} 
+          <em style="font-size: 0.8rem; color: #666">(${new Date(a.created_at).toLocaleString()})</em>
+        </li>
+      `).join('');
+    }
+
+    // 5. Stock History Render
+    function renderHistory() {
+      const tbody = document.getElementById('history-table-body');
+      tbody.innerHTML = transactions.map(t => `
+        <tr>
+          <td>${new Date(t.created_at).toLocaleString()}</td>
+          <td>${t.products?.name || 'Deleted Product'}</td>
+          <td><span class="badge ${t.type === 'IN' ? 'success' : 'danger'}">${t.type}</span></td>
+          <td>${t.quantity}</td>
+          <td>${t.reason}</td>
+        </tr>
+      `).join('');
+    }
+  </script>
+</head>
+<body>
+
+  <div class="admin-container">
+    <aside class="sidebar">
+      <h2>StockMind AI</h2>
+      <nav>
+        <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
+        <button class="nav-btn" data-tab="products">Products</button>
+        <button class="nav-btn" data-tab="alerts">Alert Center</button>
+        <button class="nav-btn" data-tab="ai">AI Forecasting</button>
+        <button class="nav-btn" data-tab="history">Stock History</button>
+      </nav>
+    </aside>
+
+    <main class="content">
+      
+      <section id="dashboard" class="tab-section active">
+        <h1>Dashboard Overview</h1>
+        <div class="metrics-grid">
+          <div class="card"><h3>Total Products</h3><p id="total-products">0</p></div>
+          <div class="card"><h3>Total Stock Units</h3><p id="total-stock">0</p></div>
+          <div class="card warning"><h3>Low Stock Items</h3><p id="low-stock-count">0</p></div>
+          <div class="card danger"><h3>Out of Stock</h3><p id="out-of-stock-count">0</p></div>
+          <div class="card"><h3>Total Valuation</h3><p id="total-valuation">$0.00</p></div>
+        </div>
+      </section>
+
+      <section id="products" class="tab-section">
+        <h1>Inventory & Products</h1>
+        
+        <div class="controls">
+          <input type="text" id="search-input" placeholder="Search by name or SKU...">
+          <select id="category-filter">
+            <option value="ALL">All Categories</option>
+            <option value="Electronics">Electronics</option>
+            <option value="Apparel">Apparel</option>
+          </select>
+        </div>
+
+        <form id="product-form" class="product-form">
+          <input type="text" id="p-name" placeholder="Name" required>
+          <input type="text" id="p-sku" placeholder="SKU" required>
+          <input type="text" id="p-category" placeholder="Category" required>
+          <input type="number" id="p-price" step="0.01" placeholder="Price" required>
+          <input type="number" id="p-stock" placeholder="Stock" required>
+          <input type="number" id="p-min-stock" placeholder="Min Stock" required>
+          <button type="submit" id="form-submit-btn">Create</button>
+        </form>
+
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th><th>Name</th><th>Category</th><th>Price</th><th>Stock Status</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="product-table-body"></tbody>
+        </table>
+      </section>
+
+      <section id="ai" class="tab-section">
+        <h1>AI Demand Prediction & Stockout Prevention</h1>
+        <p>Select a product to run automated demand forecasts using the Gemini AI service backend.</p>
+        <div id="ai-selector-container" class="product-selector"></div>
+        <div id="prediction-results" class="card" style="display: none; margin-top: 20px;"></div>
+      </section>
+
+      <section id="alerts" class="tab-section">
+        <h1>Alert Center</h1>
+        <ul id="alert-list" class="alert-list"></ul>
+      </section>
+
+      <section id="history" class="tab-section">
+        <h1>Inventory Movement History</h1>
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Product</th><th>Type</th><th>Quantity</th><th>Reason</th></tr>
+          </thead>
+          <tbody id="history-table-body"></tbody>
+        </table>
+      </section>
+
+    </main>
+  </div>
+
+</body>
+</html>
